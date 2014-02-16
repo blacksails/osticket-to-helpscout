@@ -5,9 +5,10 @@ require 'httparty'
 require 'mysql2'
 require 'base64'
 require 'json'
+require 'find'
 
 class OSTConverter
-  def initialize(key = 'f5e1167d95af8f0ae9894b8a40bae0b654b7c9ec',
+  def initialize(key = '74c67bff2eb4e40e391be29b68068713523ccd5c',
       dbhost = 'peter.avalonia.dk', dbuser = 'avalonia-user', dbpass = 'ADZXXpVNXLs68teJdGhw', db = 'crm')
 
     @api_key = key
@@ -23,6 +24,50 @@ class OSTConverter
     @con = create_mysql_connection
     @tickets = get_tickets
     create_tickets
+    #create_demo
+  end
+
+  def create_demo
+    thread = {
+        type: 'customer',
+        createdBy: {
+            email: 'hr.noergaard@icloud.com',
+            type: 'customer'
+        },
+        body: 'Hjææææælp',
+        attachments: send_attachments(['osTicketFiles/0111/1D9CC0899B5A370_emailgreen.jpg', 'osTicketFiles/0111/7B0A6A98C109D80_music_728x90.jpg'])
+    }
+    conversation = {
+        customer: {
+            email: 'hr.noergaard@icloud.com',
+            type: 'customer'
+        },
+        subject: 'TEST!!!!',
+        mailbox: {
+            id: @mailbox_id
+        },
+        threads: [thread]
+    }
+
+    begin
+      response = HTTParty.post(@url, {
+          basic_auth: @auth,
+          headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
+          body: conversation.to_json
+      })
+    rescue SocketError => se
+      raise StandardError, se.message
+    end
+
+    if response.code == 201
+      if response["item"]
+        response["item"]
+      else
+        response["Location"]
+      end
+    else
+      raise StandardError.new("Server Response: #{response.code} #{response.message} #{response.body}")
+    end
   end
 
   def create_tickets
@@ -52,6 +97,7 @@ class OSTConverter
               type: 'customer'
           },
           body: message['message'],
+          status: t_status,
           createdAt: message['created'].iso8601(0)
       }
       attachments = get_attachments(message['msg_id'], 'M')
@@ -60,36 +106,6 @@ class OSTConverter
         temphash[:attachments] = send_attachments(files)
       end
       threads << temphash
-    end
-
-    responses.each do |response|
-      temphash = {
-          type: 'message',
-          createdBy: {
-              email: response['email'],
-              type: 'user'
-          },
-          body: response['response'],
-          createdAt: response['created'].iso8601(0)
-      }
-      attachments = get_attachments(response['response_id'], 'R')
-      files = get_attached_files(attachments)
-      unless files.empty?
-        temphash[:attachments] = send_attachments(files)
-      end
-      threads << temphash
-    end
-
-    notes.each do |note|
-      threads << {
-          type: 'note',
-          createdBy: {
-              email: note['email'],
-              type: 'user'
-          },
-          body: note['title']+"\r\n\r\n"+note['note'],
-          createdAt: note['created'].iso8601(0)
-      }
     end
 
     conversation = {
@@ -106,8 +122,6 @@ class OSTConverter
         threads: threads
     }
 
-    puts JSON.pretty_generate(conversation)
-
     begin
       response = HTTParty.post(@url, {
           basic_auth: @auth,
@@ -119,27 +133,93 @@ class OSTConverter
     end
 
     if response.code == 201
-      if response["item"]
-        response["item"]
-      else
-        response["Location"]
-      end
+      location = response["Location"]
     else
-      raise StandardError.new("Server Response: #{response.code} #{response.message} #{response.body}")
+      raise StandardError.new("Server Response during tid'#{t_id}': #{response.code} #{response.message} #{response.body}")
     end
 
+    responses.each do |res|
+      body = res['response'].eql?(' ') || res['response'].empty? ? 'Empty body' : res['response']
+      temphash = {
+          type: 'message',
+          createdBy: {
+              id: get_user_id_from_email(res['email']),
+              type: 'user'
+          },
+          body: body,
+          status: t_status,
+          createdAt: res['created'].iso8601(0)
+      }
+      attachments = get_attachments(res['response_id'], 'R')
+      files = get_attached_files(attachments)
+      unless files.empty?
+        temphash[:attachments] = send_attachments(files)
+      end
+
+      begin
+        response = HTTParty.post(location, {
+            basic_auth: @auth,
+            headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
+            body: temphash.to_json
+        })
+      rescue SocketError => se
+        raise StandardError, se.message
+      end
+
+      unless response.code == 201
+        raise StandardError.new("Server Response during tid'#{t_id}': #{response.code} #{response.message} #{response.body}")
+      end
+    end
+
+    notes.each do |note|
+      temphash = {
+          type: 'note',
+          createdBy: {
+              id: get_user_id_from_email(note['email']),
+              type: 'user'
+          },
+          body: note['title']+"\r\n\r\n"+note['note'],
+          status: t_status,
+          createdAt: note['created'].iso8601(0)
+      }
+
+      begin
+        response = HTTParty.post(location, {
+            basic_auth: @auth,
+            headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
+            body: temphash.to_json
+        })
+      rescue SocketError => se
+        raise StandardError, se.message
+      end
+
+      unless response.code == 201
+        raise StandardError.new("Server Response during tid'#{t_id}': #{response.code} #{response.message} #{response.body}")
+      end
+    end
+
+  end
+
+  def get_user_id_from_email(email)
+    users = @hsclient.users
+    user = nil
+    users.each do |u|
+      user = u if u.email.eql?(email)
+    end
+    user.id
   end
 
   def send_attachments(files)
     attachments = []
     files.each do |file|
+
       data = nil
       File.open(file, 'r') do |f|
         data = Base64.encode64(f.read)
       end
 
       req = {
-          filename: File.basename(file),
+          fileName: File.basename(file),
           mimeType: 'text/plain',
           data: data
       }
@@ -148,7 +228,7 @@ class OSTConverter
         response = HTTParty.post('https://api.helpscout.net/v1/attachments.json', {
             basic_auth: @auth,
             headers: {'Content-Type' => 'application/json'},
-            body: req
+            body: req.to_json
         })
       rescue SocketError => se
         raise StandardError, se.message
@@ -158,7 +238,7 @@ class OSTConverter
         res = JSON.parse(response.body)
         attachments << res['item']
       else
-        raise StandardError.new("Server Response: #{response.code} #{response.message}")
+        raise StandardError.new("Server Response: #{response.code} #{response.message} #{response.body}")
       end
     end
     attachments
@@ -167,8 +247,7 @@ class OSTConverter
   def get_attached_files(attachments)
     files = []
     attachments.each do |row|
-      path = File.join(@attachments_dir, '**', row[1]+'*')
-      files << Dir.glob(path)
+      files.concat Dir.glob("osTicketFiles/**/#{row['file_key']}*")
     end
     files
   end
@@ -195,7 +274,7 @@ class OSTConverter
 
   def get_tickets
     @con.query 'SELECT ticket_id, email, subject, status, created '+
-                   'FROM ost_ticket ORDER BY ticket_id;'
+                   'FROM ost_ticket WHERE ticket_id>3257 ORDER BY ticket_id;'
   end
 
   def create_mysql_connection
