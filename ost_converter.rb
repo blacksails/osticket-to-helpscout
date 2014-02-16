@@ -8,7 +8,7 @@ require 'json'
 require 'find'
 
 class OSTConverter
-  def initialize(key = '74c67bff2eb4e40e391be29b68068713523ccd5c',
+  def initialize(key = 'e223025e7fbb1a47347812384c557af15287f6ec',
       dbhost = 'peter.avalonia.dk', dbuser = 'avalonia-user', dbpass = 'ADZXXpVNXLs68teJdGhw', db = 'crm')
 
     @api_key = key
@@ -72,7 +72,148 @@ class OSTConverter
 
   def create_tickets
     @tickets.each do |row|
-      create_ticket row
+      #create_ticket row
+      alternate_create_ticket row
+    end
+  end
+
+  def alternate_create_ticket(row)
+    t_id = row['ticket_id']
+    t_email = row['email']
+    t_subject = row['subject']
+    t_status = row['status'].eql?('open') ? 'active' : 'closed'
+    t_created = row['created'].iso8601(0)
+
+    puts "Now processing ticket##{t_id}"
+
+    messages = get_messages(t_id)
+    responses = get_responses(t_id)
+    notes = get_notes(t_id)
+
+    message_rows = []
+    response_rows = []
+    note_rows =[]
+    dates = []
+    date_type = {}
+    messages.each do |mes|
+      date = mes['created']
+      dates << date
+      date_type[date] = :m
+      message_rows << mes
+    end
+    responses.each do |res|
+      date = res['created']
+      dates << date+1
+      date_type[date+1] = :r
+      response_rows << res
+    end
+    notes.each do |note|
+      date = note['created']
+      dates << date+2
+      date_type[date+2] = :n
+      note_rows << note
+    end
+    dates.sort!
+
+    location = nil
+    first_thread = true
+    dates.each do |date|
+      thread = {}
+      case date_type[date]
+        when :m
+          mes = message_rows.shift
+          thread[:type] = 'customer'
+          thread[:createdBy] = {
+              email: t_email,
+              type: 'customer'
+          }
+          thread[:body] = mes['message']
+          thread[:status] = t_status
+          thread[:createdAt] = mes['created'].iso8601(0)
+          attachments = get_attachments(mes['msg_id'], 'M')
+          files = get_attached_files attachments
+          unless files.empty?
+            thread[:attachments] = send_attachments files
+          end
+        when :r
+          res = response_rows.shift
+          thread[:type] = 'message'
+          thread[:createdBy] = {
+              id: get_user_id_from_email(res['email']),
+              type: 'user'
+          }
+          body = res['response'].eql?(' ') || res['response'].empty? ? 'Empty body' : res['response']
+          thread[:body] = body
+          thread[:status] = t_status
+          thread[:createdAt] = res['created'].iso8601(0)
+          attachments = get_attachments(res['response_id'], 'R')
+          files = get_attached_files attachments
+          unless files.empty?
+            thread[:attachments] = send_attachments files
+          end
+        when :n
+          note = note_rows.shift
+          thread[:type] = 'note'
+          thread[:createdBy] = {
+              id: get_user_id_from_email(note['email']),
+              type: 'user'
+          }
+          thread[:body] = note['title']+"\r\n\r\n"+note['note']
+          thread[:status] = t_status
+          thread[:createdAt] = note['created'].iso8601(0)
+        else
+          puts 'COALA!'
+      end
+
+      if first_thread
+        conversation = {
+            customer: {
+                email: t_email,
+                type: 'customer'
+            },
+            subject: t_subject,
+            mailbox: {
+                id: @mailbox_id
+            },
+            status: t_status,
+            createdAt: t_created,
+            threads: [
+                thread
+            ]
+        }
+
+        begin
+          response = HTTParty.post(@url, {
+              basic_auth: @auth,
+              headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
+              body: conversation.to_json
+          })
+        rescue SocketError => se
+          raise StandardError, se.message
+        end
+
+        if response.code == 201
+          location = response["Location"]
+        else
+          raise StandardError.new("Server Response during tid'#{t_id}': #{response.code} #{response.message} #{response.body}")
+        end
+
+        first_thread = false
+      else
+        begin
+          response = HTTParty.post(location, {
+              basic_auth: @auth,
+              headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
+              body: thread.to_json
+          })
+        rescue SocketError => se
+          raise StandardError, se.message
+        end
+
+        unless response.code == 201
+          raise StandardError.new("Server Response during tid'#{t_id}': #{response.code} #{response.message} #{response.body}")
+        end
+      end
     end
   end
 
@@ -108,6 +249,8 @@ class OSTConverter
       threads << temphash
     end
 
+    puts "These are the threads: \n#{JSON.pretty_generate(threads)}"
+
     conversation = {
         customer: {
             email: t_email,
@@ -119,7 +262,7 @@ class OSTConverter
         },
         status: t_status,
         createdAt: t_created,
-        threads: threads
+        threads: threads,
     }
 
     begin
@@ -166,11 +309,14 @@ class OSTConverter
         raise StandardError, se.message
       end
 
-      unless response.code == 201
+      if response.code == 201
+        puts "Just sent: \n #{temphash.to_s} to #{location}"
+      else
         raise StandardError.new("Server Response during tid'#{t_id}': #{response.code} #{response.message} #{response.body}")
       end
     end
 
+begin
     notes.each do |note|
       temphash = {
           type: 'note',
@@ -180,7 +326,7 @@ class OSTConverter
           },
           body: note['title']+"\r\n\r\n"+note['note'],
           status: t_status,
-          createdAt: note['created'].iso8601(0)
+          createdAt: note['created'].iso8601(0),
       }
 
       begin
@@ -197,6 +343,7 @@ class OSTConverter
         raise StandardError.new("Server Response during tid'#{t_id}': #{response.code} #{response.message} #{response.body}")
       end
     end
+end
 
   end
 
@@ -274,7 +421,7 @@ class OSTConverter
 
   def get_tickets
     @con.query 'SELECT ticket_id, email, subject, status, created '+
-                   'FROM ost_ticket WHERE ticket_id>3257 ORDER BY ticket_id;'
+                   'FROM ost_ticket ORDER BY ticket_id;'
   end
 
   def create_mysql_connection
