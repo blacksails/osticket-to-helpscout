@@ -24,6 +24,7 @@ class OSTConverter
     @con = create_mysql_connection
     @tickets = get_tickets
     create_tickets
+    @con.close
   end
 
   def create_tickets
