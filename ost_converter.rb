@@ -24,50 +24,6 @@ class OSTConverter
     @con = create_mysql_connection
     @tickets = get_tickets
     create_tickets
-    #create_demo
-  end
-
-  def create_demo
-    thread = {
-        type: 'customer',
-        createdBy: {
-            email: 'hr.noergaard@icloud.com',
-            type: 'customer'
-        },
-        body: 'Hjææææælp',
-        attachments: send_attachments(['osTicketFiles/0111/1D9CC0899B5A370_emailgreen.jpg', 'osTicketFiles/0111/7B0A6A98C109D80_music_728x90.jpg'])
-    }
-    conversation = {
-        customer: {
-            email: 'hr.noergaard@icloud.com',
-            type: 'customer'
-        },
-        subject: 'TEST!!!!',
-        mailbox: {
-            id: @mailbox_id
-        },
-        threads: [thread]
-    }
-
-    begin
-      response = HTTParty.post(@url, {
-          basic_auth: @auth,
-          headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
-          body: conversation.to_json
-      })
-    rescue SocketError => se
-      raise StandardError, se.message
-    end
-
-    if response.code == 201
-      if response["item"]
-        response["item"]
-      else
-        response["Location"]
-      end
-    else
-      raise StandardError.new("Server Response: #{response.code} #{response.message} #{response.body}")
-    end
   end
 
   def create_tickets
