@@ -28,11 +28,11 @@ class OSTConverter
 
   def create_tickets
     @tickets.each do |row|
-      alternate_create_ticket row
+      create_ticket row
     end
   end
 
-  def alternate_create_ticket(row)
+  def create_ticket(row)
     t_id = row['ticket_id']
     t_email = row['email']
     t_subject = row['subject']
