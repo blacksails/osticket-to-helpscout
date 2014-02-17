@@ -6,23 +6,22 @@ require 'mysql2'
 require 'base64'
 require 'json'
 require 'find'
+require 'set'
 
 class OSTConverter
-  def initialize(key = 'e223025e7fbb1a47347812384c557af15287f6ec',
+  def initialize(key = '435d238f2fb0f3c4b679fe97bd86df6457f7f33f',
       dbhost = 'peter.avalonia.dk', dbuser = 'avalonia-user', dbpass = 'ADZXXpVNXLs68teJdGhw', db = 'crm')
 
     @api_key = key
     @auth = {username: @api_key, password: 'X'}
-    @dbhost = dbhost
-    @dbuser = dbuser
-    @dbpass = dbpass
-    @db = db
     @hsclient = HelpScout::Client.new(@api_key)
     @mailbox_id = get_mailbox_id
     @attachments_dir = 'osTicketFiles'
     @url = 'https://api.helpscout.net/v1/conversations.json'
-    @con = create_mysql_connection
+    @con = create_mysql_connection(dbhost, dbuser, dbpass, db)
     @tickets = get_tickets
+    @total = 0
+    @num_tickets = @tickets.count
     create_tickets
     @con.close
   end
@@ -40,7 +39,8 @@ class OSTConverter
     t_status = row['status'].eql?('open') ? 'active' : 'closed'
     t_created = row['created'].iso8601(0)
 
-    puts "Now processing ticket##{t_id}"
+    @total += 1
+    puts "Now processing ticket##{t_id} #{@total}/#{@num_tickets}"
 
     messages = get_messages(t_id)
     responses = get_responses(t_id)
@@ -49,74 +49,100 @@ class OSTConverter
     message_rows = []
     response_rows = []
     note_rows =[]
-    dates = []
+    dates = Set.new
     date_type = {}
     messages.each do |mes|
       date = mes['created']
       dates << date
-      date_type[date] = :m
+      if date_type[date].nil?
+        date_type[date] = {m: 1}
+      else
+        date_type[date][:m] += 1
+      end
       message_rows << mes
     end
     responses.each do |res|
       date = res['created']
-      dates << date+1
-      date_type[date+1] = :r
+      dates << date+3
+      if date_type[date+3].nil?
+        date_type[date+3] = {r: 1}
+      else
+        date_type[date+3][:r] += 1
+      end
       response_rows << res
     end
     notes.each do |note|
       date = note['created']
-      dates << date+2
-      date_type[date+2] = :n
+      dates << date+6
+      if date_type[date+6].nil?
+        date_type[date+6] = {n: 1}
+      else
+        date_type[date+6][:n] += 1
+      end
       note_rows << note
     end
-    dates.sort!
+    dates = dates.to_a.sort!
 
     location = nil
     first_thread = true
     dates.each do |date|
-      thread = {}
-      case date_type[date]
+      threads = []
+
+      case date_type[date].keys[0]
         when :m
-          mes = message_rows.shift
-          thread[:type] = 'customer'
-          thread[:createdBy] = {
-              email: t_email,
-              type: 'customer'
-          }
-          thread[:body] = mes['message']
-          thread[:status] = t_status
-          thread[:createdAt] = mes['created'].iso8601(0)
-          attachments = get_attachments(mes['msg_id'], 'M')
-          files = get_attached_files attachments
-          unless files.empty?
-            thread[:attachments] = send_attachments files
+          date_type[date][:m].times do
+            thread = {}
+            mes = message_rows.shift
+            thread[:type] = 'customer'
+            thread[:createdBy] = {
+                email: t_email,
+                type: 'customer'
+            }
+            body = mes['message'].eql?(' ') || mes['message'].empty? ? 'Empty body' : mes['message']
+            thread[:body] = body
+            thread[:status] = t_status
+            thread[:createdAt] = mes['created'].iso8601(0)
+            attachments = get_attachments(mes['msg_id'], 'M')
+            files = get_attached_files attachments
+            unless files.empty?
+              thread[:attachments] = send_attachments files
+            end
+            threads << thread
           end
         when :r
-          res = response_rows.shift
-          thread[:type] = 'message'
-          thread[:createdBy] = {
-              id: get_user_id_from_email(res['email']),
-              type: 'user'
-          }
-          body = res['response'].eql?(' ') || res['response'].empty? ? 'Empty body' : res['response']
-          thread[:body] = body
-          thread[:status] = t_status
-          thread[:createdAt] = res['created'].iso8601(0)
-          attachments = get_attachments(res['response_id'], 'R')
-          files = get_attached_files attachments
-          unless files.empty?
-            thread[:attachments] = send_attachments files
+          date_type[date][:r].times do
+            thread = {}
+            res = response_rows.shift
+            thread[:type] = 'message'
+            thread[:createdBy] = {
+                id: get_user_id_from_email(res['email']),
+                type: 'user'
+            }
+            body = res['response'].eql?(' ') || res['response'].empty? ? 'Empty body' : res['response']
+            thread[:body] = body
+            thread[:status] = t_status
+            thread[:createdAt] = res['created'].iso8601(0)
+            attachments = get_attachments(res['response_id'], 'R')
+            files = get_attached_files attachments
+            unless files.empty?
+              thread[:attachments] = send_attachments files
+            end
+            threads << thread
           end
         when :n
-          note = note_rows.shift
-          thread[:type] = 'note'
-          thread[:createdBy] = {
-              id: get_user_id_from_email(note['email']),
-              type: 'user'
-          }
-          thread[:body] = note['title']+"\r\n\r\n"+note['note']
-          thread[:status] = t_status
-          thread[:createdAt] = note['created'].iso8601(0)
+          date_type[date][:n].times do
+            thread = {}
+            note = note_rows.shift
+            thread[:type] = 'note'
+            thread[:createdBy] = {
+                id: get_user_id_from_email(note['email']),
+                type: 'user'
+            }
+            thread[:body] = note['title']+"\r\n\r\n"+note['note']
+            thread[:status] = t_status
+            thread[:createdAt] = note['created'].iso8601(0)
+            threads << thread
+          end
         else
           puts 'COALA!'
       end
@@ -134,7 +160,7 @@ class OSTConverter
             status: t_status,
             createdAt: t_created,
             threads: [
-                thread
+                threads.shift
             ]
         }
 
@@ -156,18 +182,20 @@ class OSTConverter
 
         first_thread = false
       else
-        begin
-          response = HTTParty.post(location, {
-              basic_auth: @auth,
-              headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
-              body: thread.to_json
-          })
-        rescue SocketError => se
-          raise StandardError, se.message
-        end
+        threads.each do |t|
+          begin
+            response = HTTParty.post(location, {
+                basic_auth: @auth,
+                headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
+                body: t.to_json
+            })
+          rescue SocketError => se
+            raise StandardError, se.message
+          end
 
-        unless response.code == 201
-          raise StandardError.new("Server Response during tid'#{t_id}': #{response.code} #{response.message} #{response.body}")
+          unless response.code == 201
+            raise StandardError.new("Server Response during tid'#{t_id}': #{response.code} #{response.message} #{response.body}")
+          end
         end
       end
     end
@@ -247,12 +275,12 @@ class OSTConverter
 
   def get_tickets
     @con.query 'SELECT ticket_id, email, subject, status, created '+
-                   'FROM ost_ticket ORDER BY ticket_id;'
+                   'FROM ost_ticket WHERE ticket_id >= 4459 ORDER BY ticket_id;'
   end
 
-  def create_mysql_connection
+  def create_mysql_connection(dbhost, dbuser, dbpass, db)
     begin
-      Mysql2::Client.new({host: @dbhost, username: @dbuser, password: @dbpass, database: @db})
+      Mysql2::Client.new({host: dbhost, username: dbuser, password: dbpass, database: db})
     rescue Mysql2::Error => e
       raise StandardError, e.message
     end
