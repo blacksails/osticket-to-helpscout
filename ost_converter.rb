@@ -9,8 +9,8 @@ require 'find'
 require 'set'
 
 class OSTConverter
-  def initialize(key = '435d238f2fb0f3c4b679fe97bd86df6457f7f33f',
-      dbhost = 'peter.avalonia.dk', dbuser = 'avalonia-user', dbpass = 'ADZXXpVNXLs68teJdGhw', db = 'crm')
+  def initialize(key,
+      dbhost, dbuser, dbpass, db)
 
     @api_key = key
     @auth = {username: @api_key, password: 'X'}
@@ -317,4 +317,4 @@ class OSTConverter
   end
 end
 
-OSTConverter.new
+OSTConverter.new('yourapikey','yourdbhost','yourdbuser','yourdbpass','yourdb')
