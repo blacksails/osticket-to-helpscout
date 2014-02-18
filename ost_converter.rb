@@ -55,29 +55,38 @@ class OSTConverter
       date = mes['created']
       dates << date
       if date_type[date].nil?
-        date_type[date] = {m: 1}
+        date_type[date] = {}
+      end
+      if date_type[date][1].nil?
+        date_type[date][1] = 1
       else
-        date_type[date][:m] += 1
+        date_type[date][1] += 1
       end
       message_rows << mes
     end
     responses.each do |res|
       date = res['created']
-      dates << date+3
-      if date_type[date+3].nil?
-        date_type[date+3] = {r: 1}
+      dates << date
+      if date_type[date].nil?
+        date_type[date] = {}
+      end
+      if date_type[date][2].nil?
+        date_type[date][2] = 1
       else
-        date_type[date+3][:r] += 1
+        date_type[date][2] += 1
       end
       response_rows << res
     end
     notes.each do |note|
       date = note['created']
-      dates << date+6
-      if date_type[date+6].nil?
-        date_type[date+6] = {n: 1}
+      dates << date
+      if date_type[date].nil?
+        date_type[date] = {}
+      end
+      if date_type[date][3].nil?
+        date_type[date][3] = 1
       else
-        date_type[date+6][:n] += 1
+        date_type[date][3] += 1
       end
       note_rows << note
     end
@@ -88,63 +97,66 @@ class OSTConverter
     dates.each do |date|
       threads = []
 
-      case date_type[date].keys[0]
-        when :m
-          date_type[date][:m].times do
-            thread = {}
-            mes = message_rows.shift
-            thread[:type] = 'customer'
-            thread[:createdBy] = {
-                email: t_email,
-                type: 'customer'
-            }
-            body = mes['message'].eql?(' ') || mes['message'].empty? ? 'Empty body' : mes['message']
-            thread[:body] = body
-            thread[:status] = t_status
-            thread[:createdAt] = mes['created'].iso8601(0)
-            attachments = get_attachments(mes['msg_id'], 'M')
-            files = get_attached_files attachments
-            unless files.empty?
-              thread[:attachments] = send_attachments files
+      keys = date_type[date].keys.sort
+      keys.each do |key|
+        case key
+          when 1
+            date_type[date][1].times do
+              thread = {}
+              mes = message_rows.shift
+              thread[:type] = 'customer'
+              thread[:createdBy] = {
+                  email: t_email,
+                  type: 'customer'
+              }
+              body = mes['message'].eql?(' ') || mes['message'].empty? ? 'Empty body' : mes['message']
+              thread[:body] = body
+              thread[:status] = t_status
+              thread[:createdAt] = mes['created'].iso8601(0)
+              attachments = get_attachments(mes['msg_id'], 'M')
+              files = get_attached_files attachments
+              unless files.empty?
+                thread[:attachments] = send_attachments files
+              end
+              threads << thread
             end
-            threads << thread
-          end
-        when :r
-          date_type[date][:r].times do
-            thread = {}
-            res = response_rows.shift
-            thread[:type] = 'message'
-            thread[:createdBy] = {
-                id: get_user_id_from_email(res['email']),
-                type: 'user'
-            }
-            body = res['response'].eql?(' ') || res['response'].empty? ? 'Empty body' : res['response']
-            thread[:body] = body
-            thread[:status] = t_status
-            thread[:createdAt] = res['created'].iso8601(0)
-            attachments = get_attachments(res['response_id'], 'R')
-            files = get_attached_files attachments
-            unless files.empty?
-              thread[:attachments] = send_attachments files
+          when 2
+            date_type[date][2].times do
+              thread = {}
+              res = response_rows.shift
+              thread[:type] = 'message'
+              thread[:createdBy] = {
+                  id: get_user_id_from_email(res['email']),
+                  type: 'user'
+              }
+              body = res['response'].eql?(' ') || res['response'].empty? ? 'Empty body' : res['response']
+              thread[:body] = body
+              thread[:status] = t_status
+              thread[:createdAt] = res['created'].iso8601(0)
+              attachments = get_attachments(res['response_id'], 'R')
+              files = get_attached_files attachments
+              unless files.empty?
+                thread[:attachments] = send_attachments files
+              end
+              threads << thread
             end
-            threads << thread
-          end
-        when :n
-          date_type[date][:n].times do
-            thread = {}
-            note = note_rows.shift
-            thread[:type] = 'note'
-            thread[:createdBy] = {
-                id: get_user_id_from_email(note['email']),
-                type: 'user'
-            }
-            thread[:body] = note['title']+"\r\n\r\n"+note['note']
-            thread[:status] = t_status
-            thread[:createdAt] = note['created'].iso8601(0)
-            threads << thread
-          end
-        else
-          puts 'COALA!'
+          when 3
+            date_type[date][3].times do
+              thread = {}
+              note = note_rows.shift
+              thread[:type] = 'note'
+              thread[:createdBy] = {
+                  id: get_user_id_from_email(note['email']),
+                  type: 'user'
+              }
+              thread[:body] = note['title']+"\r\n\r\n"+note['note']
+              thread[:status] = t_status
+              thread[:createdAt] = note['created'].iso8601(0)
+              threads << thread
+            end
+          else
+            puts 'COALA!'
+        end
       end
 
       if first_thread
@@ -259,13 +271,13 @@ class OSTConverter
 
   def get_notes(t_id)
     @con.query 'SELECT title, note, ost_ticket_note.created, email '+
-        'FROM ost_ticket_note INNER JOIN ost_staff ON ost_ticket_note.staff_id = ost_staff.staff_id '+
-        "WHERE ticket_id=#{t_id} AND source <> 'system' ORDER BY created;"
+                   'FROM ost_ticket_note INNER JOIN ost_staff ON ost_ticket_note.staff_id = ost_staff.staff_id '+
+                   "WHERE ticket_id=#{t_id} AND source <> 'system' ORDER BY created;"
   end
 
   def get_responses(t_id)
     @con.query 'SELECT response_id, response, ost_ticket_response.created, email ' +
-        'FROM ost_ticket_response INNER JOIN ost_staff ON ost_ticket_response.staff_id = ost_staff.staff_id '+
+                   'FROM ost_ticket_response INNER JOIN ost_staff ON ost_ticket_response.staff_id = ost_staff.staff_id '+
                    "WHERE ticket_id=#{t_id} ORDER BY created;"
   end
 
@@ -275,7 +287,7 @@ class OSTConverter
 
   def get_tickets
     @con.query 'SELECT ticket_id, email, subject, status, created '+
-                   'FROM ost_ticket WHERE ticket_id >= 4459 ORDER BY ticket_id;'
+                   'FROM ost_ticket ORDER BY ticket_id;'
   end
 
   def create_mysql_connection(dbhost, dbuser, dbpass, db)
