@@ -179,8 +179,9 @@ class OSTConverter
         begin
           response = HTTParty.post(@url, {
               basic_auth: @auth,
-              headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
-              body: conversation.to_json
+              headers: {'Content-Type' => 'application/json'},
+              body: conversation.to_json,
+              query: {imported: true}
           })
         rescue SocketError => se
           raise StandardError, se.message
@@ -198,8 +199,9 @@ class OSTConverter
           begin
             response = HTTParty.post(location, {
                 basic_auth: @auth,
-                headers: {'Content-Type' => 'application/json', 'imported' => 'true'},
-                body: t.to_json
+                headers: {'Content-Type' => 'application/json'},
+                body: t.to_json,
+                query: {imported: true}
             })
           rescue SocketError => se
             raise StandardError, se.message
@@ -218,6 +220,11 @@ class OSTConverter
     user = nil
     users.each do |u|
       user = u if u.email.eql?(email)
+    end
+    unless user
+      users.each do |u|
+        user = u if u.email.eql?('jakob@backupbank.dk')
+      end
     end
     user.id
   end
